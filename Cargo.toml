@@ -1,0 +1,10 @@
+[package]
+name = "elgamal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+num-bigint = "0.4"
+num-traits = "0.2"
+rand = "0.9"
+sha3 = "0.10"
