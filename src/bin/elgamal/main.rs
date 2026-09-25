@@ -1,6 +1,6 @@
+
 use std::io;
 use rand::Rng;
-
 
 fn power(a: i64, b: i64, p: i64) -> i64 {
     if b == 0 {
@@ -10,26 +10,21 @@ fn power(a: i64, b: i64, p: i64) -> i64 {
     let half = power(a, b / 2, p);
 
     if b % 2 == 0 {
-        
         return half * half % p;
     } else {
-        
         return a * half * half % p;
     }
 }
 
-
 fn generate_private_key(p: i64) -> i64 {
     let mut rng = rand::rng();
 
- 
     rng.random_range(1..p - 1)
 }
 
 fn generate_K(p: i64) -> i64 {
     let mut rng = rand::rng();
 
- 
     rng.random_range(1..p - 1)
 }
 
@@ -43,27 +38,24 @@ fn mod_inverse(s: i64, p: i64) -> i64 {
     inverse
 }
 
-
 fn encrypt(
     message: &str,
     g: i64,
     y: i64,
-
-    p: i64
+    p: i64,
 ) -> Vec<(i64, i64)> {
 
-    let k = generate_K(p);
     let mut ciphertext = Vec::new();
 
     for byte in message.as_bytes() {
 
-        
         let m = *byte as i64;
 
         
+        let k = generate_K(p);
+
         let c1 = power(g, k, p);
 
-        
         let c2 = m * power(y, k, p) % p;
 
         ciphertext.push((c1, c2));
@@ -72,51 +64,41 @@ fn encrypt(
     ciphertext
 }
 
-
 fn decrypt(
     ciphertext: Vec<(i64, i64)>,
     x: i64,
-    p: i64
-) -> String {
+    p: i64,
+) -> Result<String, String> {
 
     let mut decrypted_bytes = Vec::new();
-    
 
     for (c1, c2) in ciphertext {
 
-       
         let s = power(c1, x, p);
 
-       
         let inverse = mod_inverse(s, p);
 
-        
         let m = c2 * inverse % p;
 
-        
         decrypted_bytes.push(m as u8);
     }
 
-    String::from_utf8(decrypted_bytes).unwrap()
+    String::from_utf8(decrypted_bytes)
+        .map_err(|_| "Invalid UTF-8 in decrypted message".to_string())
 }
-
 
 fn main() {
 
-    
     let p = 257;
     let g = 3;
 
-    
     let x = generate_private_key(p);
-
 
     let y = power(g, x, p);
 
     println!("Public Key: ({}, {}, {})", p, g, y);
     println!("Private Key: {}", x);
 
-  
     println!("\nEnter message:");
 
     let mut input = String::new();
@@ -129,40 +111,44 @@ fn main() {
 
     println!("Original Message: {}", message);
 
-    
-  let k:i64;
-
-   
     let ciphertext = encrypt(
         message,
         g,
         y,
-        
-        p
+        p,
     );
 
-    
     println!("\nCiphertext (HEX):");
 
-    for (c1, c2) in &ciphertext {
+    println!("C1:");
 
-        print!(" c1 :({:02X})", c1);
-        
-    }
-    println!();
-    for (c1, c2) in &ciphertext {
-        print!(" c2 :({:02X})", c2);
+    for (c1, _) in &ciphertext {
+        print!(" ({:02X})", c1);
     }
 
     println!();
 
-    
-    let decrypted = decrypt(
+    println!("C2:");
+
+    for (_, c2) in &ciphertext {
+        print!(" ({:02X})", c2);
+    }
+
+    println!();
+
+    match decrypt(
         ciphertext,
         x,
-        p
-    );
+        p,
+    ) {
+        Ok(decrypted) => {
+            println!("\nDecrypted Message:");
+            println!("{}", decrypted);
+        }
 
-    println!("\nDecrypted Message:");
-    println!("{}", decrypted);
+        Err(error) => {
+            println!("\nDecryption failed:");
+            println!("{}", error);
+        }
+    }
 }

@@ -1,73 +1,60 @@
 use std::fs;
 
 use num_bigint::BigUint;
+use num_traits::One;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
-
 
 struct PublicKey {
     h: BigUint,
 }
 
-
 struct SecretKey {
     x: BigUint,
 }
 
-
 struct Ciphertext {
     c1: BigUint,
     c2: Vec<u8>,
+    c3: Vec<u8>,
 }
 
-
 fn hex_to_biguint(hex: &str) -> BigUint {
-
     let mut cleaned = String::new();
 
     for c in hex.chars() {
-
         if !c.is_whitespace() {
             cleaned.push(c);
         }
     }
 
-    BigUint::parse_bytes(
-        cleaned.as_bytes(),
-        16
-    )
-    .expect("Invalid hexadecimal number")
+    BigUint::parse_bytes(cleaned.as_bytes(), 16)
+        .expect("Invalid hexadecimal number")
 }
 
-
 fn generate_private_key(q: &BigUint) -> BigUint {
+    let mut rng = rand::rng();
 
-    let mut rng = rand::thread_rng();
+    let bytes_len = q.to_bytes_be().len();
 
     loop {
-
-        let bytes_len = q.to_bytes_be().len();
-
         let mut bytes = vec![0u8; bytes_len];
 
         rng.fill_bytes(&mut bytes);
 
         let x = BigUint::from_bytes_be(&bytes);
 
-        if x >= BigUint::from(1u32) && x < *q {
-
+        if x >= BigUint::one() && x < *q {
             return x;
         }
     }
 }
-
 
 fn keygen(
     p: &BigUint,
     q: &BigUint,
     g: &BigUint,
 ) -> Result<(PublicKey, SecretKey), String> {
-
     let x = generate_private_key(q);
 
     let h = g.modpow(&x, p);
@@ -80,7 +67,6 @@ fn keygen(
         x: x.clone(),
     };
 
-
     fs::write(
         "FO_public_key.txt",
         format!(
@@ -90,8 +76,7 @@ fn keygen(
             h
         ),
     )
-    .expect("Unable to write public key");
-
+    .map_err(|e| e.to_string())?;
 
     fs::write(
         "FO_secret_key.txt",
@@ -100,62 +85,57 @@ fn keygen(
             x
         ),
     )
-    .expect("Unable to write secret key");
-
+    .map_err(|e| e.to_string())?;
 
     Ok((public_key, secret_key))
 }
 
-
-fn hash_message(
-    message: &str,
+fn hash_sigma_message(
+    sigma: &[u8],
+    message: &[u8],
     q: &BigUint,
 ) -> BigUint {
-
     let mut hasher = Sha3_256::new();
 
-    hasher.update(message.as_bytes());
+    hasher.update(b"FO-HASH");
+
+    hasher.update((sigma.len() as u64).to_be_bytes());
+    hasher.update(sigma);
+
+    hasher.update((message.len() as u64).to_be_bytes());
+    hasher.update(message);
 
     let hash = hasher.finalize();
 
-    let h = BigUint::from_bytes_be(&hash);
+    let value = BigUint::from_bytes_be(&hash) % q;
 
-    let r = h % q;
-
-
-    if r == BigUint::from(0u32) {
-
+    if value == BigUint::from(0u32) {
         BigUint::from(1u32)
-
     } else {
-
-        r
+        value
     }
 }
 
-
-fn hash_shared_secret(
+fn kdf(
     shared_secret: &BigUint,
+    label: &[u8],
     length: usize,
 ) -> Vec<u8> {
-
     let mut output = Vec::new();
 
     let secret_bytes = shared_secret.to_bytes_be();
 
     let mut counter: u32 = 0;
 
-
     while output.len() < length {
-
         let mut hasher = Sha3_256::new();
 
-        hasher.update(b"FO-KDF");
+        hasher.update(label);
 
+        hasher.update((secret_bytes.len() as u64).to_be_bytes());
         hasher.update(&secret_bytes);
 
         hasher.update(counter.to_be_bytes());
-
 
         let hash = hasher.finalize();
 
@@ -164,75 +144,132 @@ fn hash_shared_secret(
         counter += 1;
     }
 
+    output.truncate(length);
+
+    output
+}
+
+fn kdf_bytes(
+    input: &[u8],
+    label: &[u8],
+    length: usize,
+) -> Vec<u8> {
+    let mut output = Vec::new();
+
+    let mut counter: u32 = 0;
+
+    while output.len() < length {
+        let mut hasher = Sha3_256::new();
+
+        hasher.update(label);
+
+        hasher.update((input.len() as u64).to_be_bytes());
+        hasher.update(input);
+
+        hasher.update(counter.to_be_bytes());
+
+        let hash = hasher.finalize();
+
+        output.extend_from_slice(&hash);
+
+        counter += 1;
+    }
 
     output.truncate(length);
 
     output
 }
 
-
 fn xor_bytes(
     message: &[u8],
     key: &[u8],
 ) -> Vec<u8> {
-
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(message.len());
 
     for i in 0..message.len() {
-
-        result.push(
-            message[i] ^ key[i]
-        );
+        result.push(message[i] ^ key[i]);
     }
 
     result
 }
 
+fn validate_subgroup_element(
+    value: &BigUint,
+    p: &BigUint,
+    q: &BigUint,
+) -> bool {
+    if value == &BigUint::from(0u32) {
+        return false;
+    }
+
+    if value >= p {
+        return false;
+    }
+
+    value.modpow(q, p) == BigUint::one()
+}
 
 fn encrypt(
-    message: &str,
+    message: &[u8],
     public_key: &PublicKey,
     p: &BigUint,
     q: &BigUint,
     g: &BigUint,
 ) -> Result<Ciphertext, String> {
+    if message.is_empty() {
+        return Err("Message cannot be empty".to_string());
+    }
 
-    let r = hash_message(
+    let mut sigma = vec![0u8; 32];
+
+    let mut rng = rand::rng();
+
+    rng.fill_bytes(&mut sigma);
+
+    let r = hash_sigma_message(
+        &sigma,
         message,
         q,
     );
-
 
     let c1 = g.modpow(
         &r,
         p,
     );
 
-
     let shared_secret = public_key.h.modpow(
         &r,
         p,
     );
 
-
-    let k = hash_shared_secret(
+    let sigma_mask = kdf(
         &shared_secret,
-        message.as_bytes().len(),
+        b"FO-SIGMA",
+        sigma.len(),
     );
-
 
     let c2 = xor_bytes(
-        message.as_bytes(),
-        &k,
+        &sigma,
+        &sigma_mask,
     );
 
+    let message_key = kdf_bytes(
+        &sigma,
+        b"FO-MESSAGE",
+        message.len(),
+    );
+
+    let c3 = xor_bytes(
+        message,
+        &message_key,
+    );
 
     Ok(Ciphertext {
         c1,
         c2,
+        c3,
     })
 }
-
 
 fn decrypt(
     ciphertext: &Ciphertext,
@@ -240,57 +277,77 @@ fn decrypt(
     p: &BigUint,
     q: &BigUint,
     g: &BigUint,
-) -> Result<String, String> {
+) -> Result<Vec<u8>, String> {
+    if !validate_subgroup_element(
+        &ciphertext.c1,
+        p,
+        q,
+    ) {
+        return Err(
+            "c1 is not a valid subgroup element".to_string()
+        );
+    }
+
+    if ciphertext.c2.len() != 32 {
+        return Err(
+            "Invalid sigma ciphertext length".to_string()
+        );
+    }
+
+    if ciphertext.c3.is_empty() {
+        return Err(
+            "Ciphertext message cannot be empty".to_string()
+        );
+    }
 
     let shared_secret = ciphertext.c1.modpow(
         &secret_key.x,
         p,
     );
 
-
-    let mask = hash_shared_secret(
+    let sigma_mask = kdf(
         &shared_secret,
-        ciphertext.c2.len(),
+        b"FO-SIGMA",
+        32,
     );
 
-
-    let message_bytes = xor_bytes(
+    let sigma = xor_bytes(
         &ciphertext.c2,
-        &mask,
+        &sigma_mask,
     );
 
+    let message_key = kdf_bytes(
+        &sigma,
+        b"FO-MESSAGE",
+        ciphertext.c3.len(),
+    );
 
+    let message = xor_bytes(
+        &ciphertext.c3,
+        &message_key,
+    );
 
-    let message = String::from_utf8(message_bytes)
-        .expect("Invalid UTF-8 message");
-
-
-    let r_prime = hash_message(
+    let r_prime = hash_sigma_message(
+        &sigma,
         &message,
         q,
     );
-
 
     let c1_prime = g.modpow(
         &r_prime,
         p,
     );
 
-
     if c1_prime != ciphertext.c1 {
-
         return Err(
             "Ciphertext verification failed".to_string()
         );
     }
 
-
     Ok(message)
 }
 
-
 fn main() {
-
     let p = hex_to_biguint(
         "87A8E61D B4B6663C FFBBD19C 65195999 8CEEF608 660DD0F2
          5D2CEED4 435E3B00 E00DF8F1 D61957D4 FAF7DF45 61B2AA30
@@ -305,12 +362,10 @@ fn main() {
          693877FA D7EF09CA DB094AE9 1E1A1597"
     );
 
-
     let q = hex_to_biguint(
         "8CF83642 A709A097 B4479976 40129DA2
          99B1A47D 1EB3750B A308B0FE 64F5FBD3"
     );
-
 
     let g = hex_to_biguint(
         "3FB32C9B 73134D0B 2E775066 60EDBD48 4CA7B18F
@@ -328,16 +383,15 @@ fn main() {
          5E2327CF EF98C582 664B4C0F 6CC41659"
     );
 
-
-    let message = fs::read_to_string("message.txt")
+    let message = fs::read("message.txt")
         .expect("Unable to read message.txt");
 
-    let message = message.trim();
-
-
     println!("\nOriginal Message:");
-    println!("{}", message);
 
+    match String::from_utf8(message.clone()) {
+        Ok(text) => println!("{}", text),
+        Err(_) => println!("{:?}", message),
+    }
 
     let (public_key, secret_key) =
         keygen(
@@ -347,9 +401,8 @@ fn main() {
         )
         .expect("Key generation failed");
 
-
     let ciphertext = encrypt(
-        message,
+        &message,
         &public_key,
         &p,
         &q,
@@ -357,28 +410,32 @@ fn main() {
     )
     .expect("Encryption failed");
 
-
     let mut c2_hex = String::new();
 
-
     for b in &ciphertext.c2 {
-
         c2_hex.push_str(
             &format!("{:02x}", b)
         );
     }
 
+    let mut c3_hex = String::new();
+
+    for b in &ciphertext.c3 {
+        c3_hex.push_str(
+            &format!("{:02x}", b)
+        );
+    }
 
     fs::write(
         "FO_ciphertext.txt",
         format!(
-            "c1 = {}\nc2 = {}\n",
+            "c1 = {}\nc2 = {}\nc3 = {}\n",
             ciphertext.c1,
-            c2_hex
+            c2_hex,
+            c3_hex
         ),
     )
     .expect("Unable to write ciphertext file");
-
 
     let decrypted = decrypt(
         &ciphertext,
@@ -389,39 +446,19 @@ fn main() {
     )
     .expect("Decryption failed");
 
-
     println!("\nDecrypted Message:");
-    println!("{}", decrypted);
 
-
-    let r_prime = hash_message(
-        &decrypted,
-        &q,
-    );
-
-
-    println!("\nr':");
-    println!("{}", r_prime);
-
-
-    let c1_prime = g.modpow(
-        &r_prime,
-        &p,
-    );
-
-
-    println!("\nc1' =");
-    println!("{}", c1_prime);
-
-
-    if c1_prime == ciphertext.c1 {
-
-        println!("\nVerification: SUCCESS");
-        println!("Ciphertext is valid.");
-
-    } else {
-
-        println!("\nVerification: FAILED");
-        println!("Ciphertext is invalid.");
+    match String::from_utf8(decrypted.clone()) {
+        Ok(text) => println!("{}", text),
+        Err(_) => println!("{:?}", decrypted),
     }
+
+    fs::write(
+        "FO_decrypted_message.txt",
+        &decrypted,
+    )
+    .expect("Unable to write decrypted message");
+
+    println!("\nVerification: SUCCESS");
+    println!("Ciphertext is valid.");
 }
