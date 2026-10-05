@@ -198,7 +198,7 @@ fn validate_subgroup_element(
     p: &BigUint,
     q: &BigUint,
 ) -> bool {
-    if value == &BigUint::from(0u32) {
+    if value <= &BigUint::one() {
         return false;
     }
 
@@ -409,6 +409,7 @@ fn main() {
         &g,
     )
     .expect("Encryption failed");
+    
 
     let mut c2_hex = String::new();
 

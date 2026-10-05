@@ -1,5 +1,5 @@
 use num_bigint::BigUint;
-use num_traits::{One, Zero};
+use num_traits::One;
 use rand::Rng;
 use sha3::{Digest, Sha3_256};
 use std::fs;
@@ -287,7 +287,7 @@ fn validate_subgroup_element(
     value: &BigUint,
     public_key: &PublicKey,
 ) -> bool {
-    if value.is_zero() || value >= &public_key.p {
+    if value <= &BigUint::one() || value >= &public_key.p {
         return false;
     }
 
@@ -462,12 +462,12 @@ fn main() {
         Err(_) => println!("{:?}", message),
     }
 
-    let ciphertext = encrypt(
+    let mut ciphertext = encrypt(
         &message,
         &public_key,
     )
     .expect("Encryption failed");
-
+   
     fs::write(
         "ciphertext.txt",
         format!(
