@@ -1,2 +1,4 @@
 /target
 *_key.txt
+ciphertext.txt
+decrypted_message.txt

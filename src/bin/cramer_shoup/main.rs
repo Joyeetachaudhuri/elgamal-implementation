@@ -1,4 +1,4 @@
-use num_bigint::BigUint;
+use num_bigint::{BigUint};
 use num_traits::One;
 use rand::Rng;
 use sha3::{Digest, Sha3_256};
@@ -42,9 +42,20 @@ fn hex_to_biguint(s: &str) -> BigUint {
         .expect("Invalid hexadecimal number")
 }
 
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+
+    for b in bytes {
+        out.push_str(&format!("{:02X}", b));
+    }
+
+    out
+}
+
 fn power(a: &BigUint, b: &BigUint, p: &BigUint) -> BigUint {
     a.modpow(b, p)
 }
+
 
 fn generate_private_key(q: &BigUint) -> BigUint {
     let mut rng = rand::rng();
@@ -52,6 +63,7 @@ fn generate_private_key(q: &BigUint) -> BigUint {
 
     loop {
         let mut bytes = vec![0u8; bytes_len];
+
         rng.fill(&mut bytes[..]);
 
         let value = BigUint::from_bytes_be(&bytes);
@@ -61,6 +73,7 @@ fn generate_private_key(q: &BigUint) -> BigUint {
         }
     }
 }
+
 
 fn fixed_bytes(value: &BigUint, width: usize) -> Vec<u8> {
     let bytes = value.to_bytes_be();
@@ -76,6 +89,7 @@ fn fixed_bytes(value: &BigUint, width: usize) -> Vec<u8> {
     result
 }
 
+
 fn hash_value(
     u1: &BigUint,
     u2: &BigUint,
@@ -83,7 +97,7 @@ fn hash_value(
     p: &BigUint,
     q: &BigUint,
 ) -> BigUint {
-    let width = ((p.bits() + 7) / 8) as usize;
+    let width = p.bits().div_ceil(8) as usize;
 
     let mut hasher = Sha3_256::new();
 
@@ -106,7 +120,7 @@ fn kdf(
     label: &[u8],
     length: usize,
 ) -> Vec<u8> {
-    let width = ((p.bits() + 7) / 8) as usize;
+    let width = p.bits().div_ceil(8) as usize;
 
     let secret_bytes = fixed_bytes(shared_secret, width);
     let u1_bytes = fixed_bytes(u1, width);
@@ -136,12 +150,13 @@ fn kdf(
     output
 }
 
-fn keygen(
+
+fn generate_keys(
     p: BigUint,
     q: BigUint,
     g1: BigUint,
     g2: BigUint,
-) -> std::io::Result<(PublicKey, SecretKey)> {
+) -> (PublicKey, SecretKey) {
     let x1 = generate_private_key(&q);
     let x2 = generate_private_key(&q);
     let y1 = generate_private_key(&q);
@@ -161,8 +176,8 @@ fn keygen(
     let h = power(&g1, &z, &p);
 
     let public_key = PublicKey {
-        p: p.clone(),
-        q: q.clone(),
+        p,
+        q,
         g1,
         g2,
         c,
@@ -178,6 +193,13 @@ fn keygen(
         z,
     };
 
+    (public_key, secret_key)
+}
+
+fn write_key_files(
+    public_key: &PublicKey,
+    secret_key: &SecretKey,
+) -> std::io::Result<()> {
     fs::write(
         "public_key.txt",
         format!(
@@ -204,7 +226,7 @@ fn keygen(
         ),
     )?;
 
-    Ok((public_key, secret_key))
+    Ok(())
 }
 
 fn encrypt(
@@ -282,6 +304,7 @@ fn encrypt(
         v,
     })
 }
+
 
 fn validate_subgroup_element(
     value: &BigUint,
@@ -397,7 +420,7 @@ fn decrypt(
     Ok(message)
 }
 
-fn main() {
+fn group_parameters() -> (BigUint, BigUint, BigUint) {
     let p = hex_to_biguint(
         "87A8E61D B4B6663C FFBBD19C 65195999 8CEEF608 660DD0F2
          5D2CEED4 435E3B00 E00DF8F1 D61957D4 FAF7DF45 61B2AA30
@@ -433,6 +456,12 @@ fn main() {
          5E2327CF EF98C582 664B4C0F 6CC41659"
     );
 
+    (p, q, g)
+}
+
+fn new_keypair() -> (PublicKey, SecretKey) {
+    let (p, q, g) = group_parameters();
+
     let g1 = g.clone();
 
     let t = generate_private_key(&q);
@@ -443,13 +472,18 @@ fn main() {
         &p,
     );
 
-    let (public_key, secret_key) =
-        keygen(
-            p,
-            q,
-            g1,
-            g2,
-        )
+    generate_keys(
+        p,
+        q,
+        g1,
+        g2,
+    )
+}
+
+fn main() {
+    let (public_key, secret_key) = new_keypair();
+
+    write_key_files(&public_key, &secret_key)
         .expect("Key generation failed");
 
     let message = fs::read("message.txt")
@@ -462,19 +496,19 @@ fn main() {
         Err(_) => println!("{:?}", message),
     }
 
-    let mut ciphertext = encrypt(
+    let ciphertext = encrypt(
         &message,
         &public_key,
     )
     .expect("Encryption failed");
-   
+
     fs::write(
         "ciphertext.txt",
         format!(
-            "u1 = {}\nu2 = {}\ne = {:02X?}\nv = {}\n",
+            "u1 = {}\nu2 = {}\ne = {}\nv = {}\n",
             ciphertext.u1,
             ciphertext.u2,
-            ciphertext.e,
+            bytes_to_hex(&ciphertext.e),
             ciphertext.v
         ),
     )
@@ -502,3 +536,4 @@ fn main() {
         "Unable to write decrypted_message.txt"
     );
 }
+

@@ -32,6 +32,16 @@ fn hex_to_biguint(hex: &str) -> BigUint {
         .expect("Invalid hexadecimal number")
 }
 
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+
+    out
+}
+
 fn generate_private_key(q: &BigUint) -> BigUint {
     let mut rng = rand::rng();
 
@@ -50,30 +60,35 @@ fn generate_private_key(q: &BigUint) -> BigUint {
     }
 }
 
-fn keygen(
+
+fn generate_keys(
     p: &BigUint,
     q: &BigUint,
     g: &BigUint,
-) -> Result<(PublicKey, SecretKey), String> {
+) -> (PublicKey, SecretKey) {
     let x = generate_private_key(q);
 
     let h = g.modpow(&x, p);
 
-    let public_key = PublicKey {
-        h: h.clone(),
-    };
+    (PublicKey { h }, SecretKey { x })
+}
 
-    let secret_key = SecretKey {
-        x: x.clone(),
-    };
-
+fn write_key_files(
+    public_key: &PublicKey,
+    secret_key: &SecretKey,
+    p: &BigUint,
+    q: &BigUint,
+    g: &BigUint,
+) -> Result<(), String> {
+   
     fs::write(
         "FO_public_key.txt",
         format!(
-            "q = {}\ng = {}\nh = {}\n",
+            "p = {}\nq = {}\ng = {}\nh = {}\n",
+            p,
             q,
             g,
-            h
+            public_key.h
         ),
     )
     .map_err(|e| e.to_string())?;
@@ -82,12 +97,12 @@ fn keygen(
         "FO_secret_key.txt",
         format!(
             "x = {}\n",
-            x
+            secret_key.x
         ),
     )
     .map_err(|e| e.to_string())?;
 
-    Ok((public_key, secret_key))
+    Ok(())
 }
 
 fn hash_sigma_message(
@@ -180,18 +195,26 @@ fn kdf_bytes(
     output
 }
 
+
 fn xor_bytes(
     message: &[u8],
     key: &[u8],
-) -> Vec<u8> {
-    let mut result = Vec::with_capacity(message.len());
-
-    for i in 0..message.len() {
-        result.push(message[i] ^ key[i]);
+) -> Result<Vec<u8>, String> {
+    if message.len() != key.len() {
+        return Err(
+            "XOR key length does not match message length".to_string()
+        );
     }
 
-    result
+    Ok(
+        message
+            .iter()
+            .zip(key.iter())
+            .map(|(m, k)| m ^ k)
+            .collect()
+    )
 }
+
 
 fn validate_subgroup_element(
     value: &BigUint,
@@ -251,7 +274,7 @@ fn encrypt(
     let c2 = xor_bytes(
         &sigma,
         &sigma_mask,
-    );
+    )?;
 
     let message_key = kdf_bytes(
         &sigma,
@@ -262,7 +285,7 @@ fn encrypt(
     let c3 = xor_bytes(
         message,
         &message_key,
-    );
+    )?;
 
     Ok(Ciphertext {
         c1,
@@ -314,7 +337,7 @@ fn decrypt(
     let sigma = xor_bytes(
         &ciphertext.c2,
         &sigma_mask,
-    );
+    )?;
 
     let message_key = kdf_bytes(
         &sigma,
@@ -325,7 +348,7 @@ fn decrypt(
     let message = xor_bytes(
         &ciphertext.c3,
         &message_key,
-    );
+    )?;
 
     let r_prime = hash_sigma_message(
         &sigma,
@@ -347,7 +370,7 @@ fn decrypt(
     Ok(message)
 }
 
-fn main() {
+fn group_parameters() -> (BigUint, BigUint, BigUint) {
     let p = hex_to_biguint(
         "87A8E61D B4B6663C FFBBD19C 65195999 8CEEF608 660DD0F2
          5D2CEED4 435E3B00 E00DF8F1 D61957D4 FAF7DF45 61B2AA30
@@ -383,6 +406,12 @@ fn main() {
          5E2327CF EF98C582 664B4C0F 6CC41659"
     );
 
+    (p, q, g)
+}
+
+fn main() {
+    let (p, q, g) = group_parameters();
+
     let message = fs::read("message.txt")
         .expect("Unable to read message.txt");
 
@@ -393,13 +422,20 @@ fn main() {
         Err(_) => println!("{:?}", message),
     }
 
-    let (public_key, secret_key) =
-        keygen(
-            &p,
-            &q,
-            &g,
-        )
-        .expect("Key generation failed");
+    let (public_key, secret_key) = generate_keys(
+        &p,
+        &q,
+        &g,
+    );
+
+    write_key_files(
+        &public_key,
+        &secret_key,
+        &p,
+        &q,
+        &g,
+    )
+    .expect("Key generation failed");
 
     let ciphertext = encrypt(
         &message,
@@ -409,31 +445,14 @@ fn main() {
         &g,
     )
     .expect("Encryption failed");
-    
-
-    let mut c2_hex = String::new();
-
-    for b in &ciphertext.c2 {
-        c2_hex.push_str(
-            &format!("{:02x}", b)
-        );
-    }
-
-    let mut c3_hex = String::new();
-
-    for b in &ciphertext.c3 {
-        c3_hex.push_str(
-            &format!("{:02x}", b)
-        );
-    }
 
     fs::write(
         "FO_ciphertext.txt",
         format!(
             "c1 = {}\nc2 = {}\nc3 = {}\n",
             ciphertext.c1,
-            c2_hex,
-            c3_hex
+            bytes_to_hex(&ciphertext.c2),
+            bytes_to_hex(&ciphertext.c3)
         ),
     )
     .expect("Unable to write ciphertext file");

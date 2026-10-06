@@ -1,4 +1,3 @@
-
 use std::io;
 use rand::Rng;
 
@@ -10,19 +9,14 @@ fn power(a: i64, b: i64, p: i64) -> i64 {
     let half = power(a, b / 2, p);
 
     if b % 2 == 0 {
-        return half * half % p;
+        half * half % p
     } else {
-        return a * half * half % p;
+        a * half * half % p
     }
 }
 
+
 fn generate_private_key(p: i64) -> i64 {
-    let mut rng = rand::rng();
-
-    rng.random_range(1..p - 1)
-}
-
-fn generate_K(p: i64) -> i64 {
     let mut rng = rand::rng();
 
     rng.random_range(1..p - 1)
@@ -51,8 +45,8 @@ fn encrypt(
 
         let m = *byte as i64;
 
-        
-        let k = generate_K(p);
+      
+        let k = generate_private_key(p);
 
         let c1 = power(g, k, p);
 
@@ -149,6 +143,95 @@ fn main() {
         Err(error) => {
             println!("\nDecryption failed:");
             println!("{}", error);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    const P: i64 = 257;
+    const G: i64 = 3;
+
+    fn keypair() -> (i64, i64) {
+        let x = generate_private_key(P);
+
+        (x, power(G, x, P))
+    }
+
+    #[test]
+    fn round_trip() {
+        let (x, y) = keypair();
+        let msg = "hello, elgamal";
+
+        let ct = encrypt(msg, G, y, P);
+
+        assert_eq!(decrypt(ct, x, P).unwrap(), msg);
+    }
+
+    #[test]
+    fn round_trip_covers_full_ascii_range() {
+        let (x, y) = keypair();
+        let msg: String = (0u8..=127).map(|b| b as char).collect();
+
+        let ct = encrypt(&msg, G, y, P);
+
+        assert_eq!(decrypt(ct, x, P).unwrap(), msg);
+    }
+
+    #[test]
+    fn fresh_k_per_byte_repeated_bytes_do_not_collide() {
+       
+        let (_, y) = keypair();
+        let msg = "a".repeat(200);
+
+        let ct = encrypt(&msg, G, y, P);
+
+        let distinct_c1: HashSet<i64> = ct.iter().map(|(c1, _)| *c1).collect();
+        let distinct_pairs: HashSet<(i64, i64)> = ct.iter().cloned().collect();
+
+        assert!(distinct_c1.len() > 50);
+        assert!(distinct_pairs.len() > 50);
+    }
+
+    #[test]
+    fn ciphertext_values_stay_in_the_field() {
+        let (_, y) = keypair();
+
+        for (c1, c2) in encrypt("range check", G, y, P) {
+            assert!((1..P).contains(&c1));
+            assert!((0..P).contains(&c2));
+        }
+    }
+
+    #[test]
+    fn generated_exponents_are_in_range() {
+        for _ in 0..1000 {
+            let k = generate_private_key(P);
+
+            assert!((1..P - 1).contains(&k));
+        }
+    }
+
+    #[test]
+    fn power_matches_naive_exponentiation() {
+        for b in 0..20 {
+            let mut naive = 1i64;
+
+            for _ in 0..b {
+                naive = naive * G % P;
+            }
+
+            assert_eq!(power(G, b, P), naive);
+        }
+    }
+
+    #[test]
+    fn mod_inverse_is_correct() {
+        for s in 1..P {
+            assert_eq!(s * mod_inverse(s, P) % P, 1);
         }
     }
 }
